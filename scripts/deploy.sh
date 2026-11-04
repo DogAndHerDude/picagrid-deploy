@@ -46,15 +46,17 @@ for image in $(images); do
   changed+=("$image")
 done
 
-running="$(docker compose ps --status running --services | wc -l | tr -d ' ')"
+# Not --services, which prints an empty line when nothing is running, and that counts as one.
+running="$(docker compose ps --status running --quiet | wc -l | tr -d ' ')"
 if [ "${#changed[@]}" -eq 0 ] && [ "$config_before" = "$config_after" ] && [ "$running" -gt 0 ]; then
   exit 0
 fi
 
 log "updating: ${changed[*]:-settings}"
-if printf '%s\n' "${changed[@]:-}" | grep -q 'picagrid-api\|picagrid-kratos' && [ "$running" -gt 0 ]; then
-  # Their migrations run next, and those can't be undone by going back to an old image.
-  scripts/backup.sh database || { alert "the backup before a deploy failed, so nothing was updated"; for image in "${changed[@]}"; do [ -n "${before[$image]}" ] && docker tag "${before[$image]}" "$image"; done; exit 1; }
+if printf '%s\n' "${changed[@]:-}" | grep -q 'picagrid-api\|picagrid-kratos'; then
+  # Their migrations run next, and those can't be undone by going back to an old image. The database
+  # may not be up, on the first deploy or after a stop, and a running one is left alone.
+  { docker compose up -d --wait --wait-timeout "$WAIT_SECONDS" --no-recreate postgres && scripts/backup.sh database; } || { alert "the backup before a deploy failed, so nothing was updated"; for image in "${changed[@]}"; do [ -n "${before[$image]}" ] && docker tag "${before[$image]}" "$image"; done; exit 1; }
 fi
 
 if docker compose up -d --wait --wait-timeout "$WAIT_SECONDS" --remove-orphans; then
