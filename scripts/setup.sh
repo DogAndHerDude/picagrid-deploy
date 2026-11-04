@@ -2,7 +2,7 @@
 # Prepares a fresh Hetzner server for Picagrid. Copy it over and run it as root, on Ubuntu 24.04:
 #
 #   scp scripts/setup.sh root@SERVER:
-#   ssh root@SERVER bash setup.sh
+#   ssh -t root@SERVER bash setup.sh
 #
 # It asks for what it needs. Running it again is safe: it keeps what's already there, including .env.
 set -euo pipefail
@@ -236,6 +236,8 @@ first_start() {
 
 main() {
   [ "$(id -u)" = 0 ] || { echo "Run this as root." >&2; exit 1; }
+  # Without a terminal its questions wait for answers without ever being shown.
+  [ -t 0 ] || { echo "This asks questions, so it needs a terminal: ssh -t root@SERVER bash setup.sh" >&2; exit 1; }
   install_packages
   install_docker
   add_swap

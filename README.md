@@ -35,7 +35,7 @@ An Ubuntu 24.04 server, with your SSH key added when creating it. In Hetzner's f
 
 ```sh
 scp scripts/setup.sh root@SERVER:
-ssh root@SERVER bash setup.sh
+ssh -t root@SERVER bash setup.sh
 ```
 
 It installs Docker, a firewall, fail2ban and automatic security updates, adds swap, makes a `deploy` user, turns off SSH passwords, generates the secrets, asks for the rest, checks DNS, and starts everything. It'll show you a deploy key to add to this repository. Running it again is safe.
