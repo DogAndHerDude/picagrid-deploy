@@ -1,0 +1,10 @@
+[Unit]
+Description=Picagrid: pick up new images
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/opt/picagrid
+ExecStart=/opt/picagrid/scripts/deploy.sh

@@ -1,0 +1,10 @@
+[Unit]
+Description=Picagrid: back up databases and uploaded files
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/opt/picagrid
+ExecStart=/opt/picagrid/scripts/backup.sh

@@ -1,0 +1,9 @@
+[Unit]
+Description=Picagrid: back up every night
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

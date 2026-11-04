@@ -1,0 +1,234 @@
+name: picagrid
+
+# Everything that runs in production. Settings are in .env: see .env.example.
+x-restart: &restart
+  restart: unless-stopped
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+x-kratos-env: &kratos-env
+  DSN: postgres://picagrid:${POSTGRES_PASSWORD:?}@postgres:5432/kratos?sslmode=disable
+
+services:
+  traefik:
+    image: traefik:v3.7.17
+    <<: [*restart, *logging]
+    command:
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.websecure.http.tls.certresolver=letsencrypt
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=${COMPOSE_PROJECT_NAME:-picagrid}_default
+      - --providers.docker.constraints=Label(`com.docker.compose.project`,`${COMPOSE_PROJECT_NAME:-picagrid}`)
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.letsencrypt.acme.tlschallenge=true
+      - --certificatesresolvers.letsencrypt.acme.caserver=${ACME_CA_SERVER:-https://acme-v02.api.letsencrypt.org/directory}
+      - --log.level=INFO
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - letsencrypt:/letsencrypt
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    labels:
+      - traefik.enable=true
+      # Applied by each router below.
+      - traefik.http.middlewares.secure-headers.headers.stsSeconds=31536000
+      - traefik.http.middlewares.secure-headers.headers.stsIncludeSubdomains=true
+      - traefik.http.middlewares.secure-headers.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.secure-headers.headers.frameDeny=true
+      - traefik.http.middlewares.secure-headers.headers.referrerPolicy=strict-origin-when-cross-origin
+
+  postgres:
+    image: postgres:18.6-alpine
+    <<: [*restart, *logging]
+    environment:
+      POSTGRES_USER: picagrid
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: picagrid
+    volumes:
+      - postgres:/var/lib/postgresql
+      - ./postgres/init-databases.sql:/docker-entrypoint-initdb.d/init-databases.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U picagrid -d kratos"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  kratos-migrate:
+    image: ${IMAGE_PREFIX:-ghcr.io/dogandherdude}/picagrid-kratos:${KRATOS_TAG:-main}
+    <<: *logging
+    command: migrate sql -e --yes
+    environment:
+      <<: *kratos-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  kratos:
+    image: ${IMAGE_PREFIX:-ghcr.io/dogandherdude}/picagrid-kratos:${KRATOS_TAG:-main}
+    <<: [*restart, *logging]
+    command: >-
+      serve
+      -c /etc/config/kratos/kratos.yml
+      -c /etc/config/kratos/prod/kratos.prod.yml
+      --watch-courier
+      --sqa-opt-out
+    environment:
+      <<: *kratos-env
+      SECRETS_COOKIE: ${KRATOS_COOKIE_SECRET:?}
+      SECRETS_CIPHER: ${KRATOS_CIPHER_SECRET:?}
+      # On the app's own address, so the browser needs no cross-origin rules to reach it.
+      SERVE_PUBLIC_BASE_URL: https://app.${DOMAIN:?}/kratos/
+      SERVE_ADMIN_BASE_URL: http://kratos:4434/
+      # On the shared parent domain, as the API at api.${DOMAIN} reads this cookie too.
+      SESSION_COOKIE_DOMAIN: ${DOMAIN:?}
+      COOKIES_DOMAIN: ${DOMAIN:?}
+      SELFSERVICE_DEFAULT_BROWSER_RETURN_URL: https://app.${DOMAIN:?}/
+      SELFSERVICE_ALLOWED_RETURN_URLS: https://app.${DOMAIN:?}
+      SELFSERVICE_FLOWS_ERROR_UI_URL: https://app.${DOMAIN:?}/signin
+      SELFSERVICE_FLOWS_LOGIN_UI_URL: https://app.${DOMAIN:?}/signin
+      SELFSERVICE_FLOWS_LOGIN_LIFESPAN: 10m
+      SELFSERVICE_FLOWS_REGISTRATION_UI_URL: https://app.${DOMAIN:?}/signin
+      SELFSERVICE_FLOWS_REGISTRATION_LIFESPAN: 10m
+      SELFSERVICE_FLOWS_SETTINGS_UI_URL: https://app.${DOMAIN:?}/settings
+      SELFSERVICE_FLOWS_RECOVERY_UI_URL: https://app.${DOMAIN:?}/recovery
+      SELFSERVICE_FLOWS_LOGOUT_AFTER_DEFAULT_BROWSER_RETURN_URL: https://app.${DOMAIN:?}/signin
+      # Changing the id later makes every passkey and security key stop working.
+      SELFSERVICE_METHODS_WEBAUTHN_CONFIG_RP_ID: ${DOMAIN:?}
+      SELFSERVICE_METHODS_WEBAUTHN_CONFIG_RP_DISPLAY_NAME: Picagrid
+      SELFSERVICE_METHODS_WEBAUTHN_CONFIG_RP_ORIGINS: https://app.${DOMAIN:?}
+      SELFSERVICE_METHODS_OIDC_CONFIG_PROVIDERS: ${OIDC_PROVIDERS:?}
+      COURIER_SMTP_CONNECTION_URI: ${KRATOS_SMTP_URI:?}
+      COURIER_SMTP_FROM_ADDRESS: ${MAIL_FROM_ADDRESS:?}
+      COURIER_SMTP_FROM_NAME: Picagrid
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.kratos.loadbalancer.server.port=4433
+      - traefik.http.middlewares.kratos-strip.stripprefix.prefixes=/kratos
+      # Only what browsers need. Its public port redirects /admin to the admin API's internal address.
+      - traefik.http.routers.kratos.rule=Host(`app.${DOMAIN:?}`) && PathPrefix(`/kratos`) && !PathPrefix(`/kratos/admin`)
+      - traefik.http.routers.kratos.entrypoints=websecure
+      - traefik.http.routers.kratos.service=kratos
+      - traefik.http.routers.kratos.middlewares=secure-headers,kratos-strip
+      # Signing in also asks the API whether the account has attempts left.
+      - traefik.http.middlewares.two-factor-limit.forwardauth.address=http://api:8080/internal/traefik/two-factor-attempt
+      - traefik.http.routers.kratos-login.rule=Host(`app.${DOMAIN:?}`) && Method(`POST`) && PathPrefix(`/kratos/self-service/login`)
+      - traefik.http.routers.kratos-login.priority=1000
+      - traefik.http.routers.kratos-login.entrypoints=websecure
+      - traefik.http.routers.kratos-login.service=kratos
+      - traefik.http.routers.kratos-login.middlewares=secure-headers,two-factor-limit,kratos-strip
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:4434/admin/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      kratos-migrate:
+        condition: service_completed_successfully
+
+  api-migrate:
+    image: ${IMAGE_PREFIX:-ghcr.io/dogandherdude}/picagrid-api:${API_TAG:-main}
+    <<: *logging
+    command: ["/app/migrate", "up"]
+    environment:
+      DATABASE_URL: postgres://picagrid:${POSTGRES_PASSWORD:?}@postgres:5432/picagrid?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    image: ${IMAGE_PREFIX:-ghcr.io/dogandherdude}/picagrid-api:${API_TAG:-main}
+    <<: [*restart, *logging]
+    environment:
+      PORT: 8080
+      DATABASE_URL: postgres://picagrid:${POSTGRES_PASSWORD:?}@postgres:5432/picagrid?sslmode=disable
+      KRATOS_PUBLIC_URL: http://kratos:4433
+      KRATOS_ADMIN_URL: http://kratos:4434
+      ALLOWED_ORIGINS: https://app.${DOMAIN:?}
+      APP_URL: https://app.${DOMAIN:?}
+      SMTP_ADDR: ${SMTP_ADDR:?}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: Picagrid <${MAIL_FROM_ADDRESS:?}>
+      SIGNUP_ALLOWED_EMAILS: ${SIGNUP_ALLOWED_EMAILS:-}
+      SSO_DEFAULT_PROVIDER: ${SSO_DEFAULT_PROVIDER:-}
+      SSO_DOMAINS: ${SSO_DOMAINS:-}
+      ASSET_DIR: /data/assets
+    volumes:
+      - assets:/data/assets
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.api.loadbalancer.server.port=8080
+      - traefik.http.services.api.loadbalancer.healthcheck.path=/healthz
+      - traefik.http.services.api.loadbalancer.healthcheck.interval=5s
+      # /internal is only for Kratos and Traefik.
+      - traefik.http.routers.api.rule=Host(`api.${DOMAIN:?}`) && !PathPrefix(`/internal`)
+      - traefik.http.routers.api.entrypoints=websecure
+      - traefik.http.routers.api.service=api
+      - traefik.http.routers.api.middlewares=secure-headers
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      api-migrate:
+        condition: service_completed_successfully
+      kratos:
+        condition: service_healthy
+
+  ui:
+    image: ${IMAGE_PREFIX:-ghcr.io/dogandherdude}/picagrid-ui:${UI_TAG:-main}
+    <<: [*restart, *logging]
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.ui.loadbalancer.server.port=8080
+      - traefik.http.routers.ui.rule=Host(`app.${DOMAIN:?}`)
+      - traefik.http.routers.ui.entrypoints=websecure
+      - traefik.http.routers.ui.service=ui
+      - traefik.http.routers.ui.middlewares=secure-headers
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  website:
+    image: ${IMAGE_PREFIX:-ghcr.io/dogandherdude}/picagrid-website:${WEBSITE_TAG:-main}
+    <<: [*restart, *logging]
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.website.loadbalancer.server.port=8080
+      - traefik.http.routers.website.rule=Host(`${DOMAIN:?}`)
+      - traefik.http.routers.website.entrypoints=websecure
+      - traefik.http.routers.website.service=website
+      - traefik.http.routers.website.middlewares=secure-headers
+      # www goes to the one address, so search engines and links see one site.
+      - traefik.http.middlewares.www-to-apex.redirectregex.regex=^https://www\.(.*)
+      - traefik.http.middlewares.www-to-apex.redirectregex.replacement=https://$${1}
+      - traefik.http.middlewares.www-to-apex.redirectregex.permanent=true
+      - traefik.http.routers.website-www.rule=Host(`www.${DOMAIN:?}`)
+      - traefik.http.routers.website-www.entrypoints=websecure
+      - traefik.http.routers.website-www.service=website
+      - traefik.http.routers.website-www.middlewares=www-to-apex
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  postgres:
+  assets:
+  letsencrypt:
