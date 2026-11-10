@@ -14,6 +14,19 @@ env_value() {
   { grep -E "^$1=" .env 2>/dev/null || true; } | tail -n 1 | cut -d= -f2- | sed -e "s/^'//" -e "s/'$//"
 }
 
+# Adds what storage needs to a .env written before it existed, as an update can't ask anyone.
+ensure_storage_settings() {
+  [ -f .env ] || return 0
+  local name value
+  for name in GARAGE_RPC_SECRET GARAGE_ADMIN_TOKEN S3_ACCESS_KEY S3_SECRET_KEY; do
+    [ -z "$(env_value "$name")" ] || continue
+    value="$(openssl rand -hex 32)"
+    # Garage only takes access keys in this form.
+    [ "$name" = S3_ACCESS_KEY ] && value="GK$(openssl rand -hex 12)"
+    printf '%s=%s\n' "$name" "$value" >>.env
+  done
+}
+
 alert() {
   log "ALERT: $*"
   local url
@@ -22,4 +35,15 @@ alert() {
     curl -fsS -m 10 -H 'Content-Type: application/json' \
       -d "$(printf '{"text":"Picagrid on %s: %s"}' "$(hostname)" "$*")" "$url" >/dev/null || log "the alert couldn't be sent"
   fi
+}
+
+# Runs rclone next to storage, with a folder of backups at /backups: rclone_run sync store:… /backups/…
+rclone_run() {
+  docker compose run --rm -T --user "$(id -u):$(id -g)" -v "$BACKUP_DIR:/backups" rclone "$@"
+}
+
+storage_bucket() {
+  local bucket
+  bucket="$(env_value S3_BUCKET)"
+  printf '%s' "${bucket:-picagrid}"
 }

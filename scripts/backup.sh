@@ -18,7 +18,10 @@ gzip -t "$target.partial/databases.sql.gz"
 [ "$(gzip -dc "$target.partial/databases.sql.gz" | grep -c '^CREATE DATABASE\|^\\connect')" -gt 0 ] || { alert "a database backup came out empty"; exit 1; }
 
 if [ "${1:-}" != "database" ]; then
-  docker compose exec -T api tar -C /data -czf - assets >"$target.partial/assets.tar.gz"
+  # Not uploads/: those are files still on their way in.
+  rclone_run copy "store:$(storage_bucket)" "/backups/$stamp.partial/assets" --exclude 'uploads/**'
+  tar -C "$target.partial" -czf "$target.partial/assets.tar.gz" assets
+  rm -rf "$target.partial/assets"
 fi
 
 mv "$target.partial" "$target"

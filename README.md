@@ -7,6 +7,7 @@ How Picagrid runs in production, on one Hetzner server, behind Traefik.
 | `picagrid.com` | The homepage. `www.picagrid.com` redirects here |
 | `app.picagrid.com` | The app, and Kratos at `/kratos` |
 | `api.picagrid.com` | The API |
+| `s3.picagrid.com` | Garage, for browsers sending uploads. It only accepts `PUT` and `OPTIONS` |
 
 ## How updates arrive
 
@@ -23,7 +24,7 @@ Changes to this repository, like `compose.yaml`, arrive the same way. The server
 
 1. **Create this repository** on GitHub as `DogAndHerDude/picagrid-deploy`, and push it.
 2. **Push the other four**, with their `.github/workflows/publish.yml`, and check the images appear under the account's Packages.
-3. **DNS:** A records (and AAAA, if you use IPv6) for `picagrid.com`, `www`, `app` and `api`, all to the server. Do this early, so they've spread by the time certificates are requested.
+3. **DNS:** A records (and AAAA, if you use IPv6) for `picagrid.com`, `www`, `app`, `api` and `s3`, all to the server. Do this early, so they've spread by the time certificates are requested.
 4. **Google sign-in:** create an OAuth client with the redirect address `https://app.picagrid.com/kratos/self-service/methods/oidc/callback/google`.
 5. **Microsoft sign-in:** register an app with the redirect address `https://app.picagrid.com/kratos/self-service/methods/oidc/callback/microsoft`, and turn on the optional `xms_edov` claim under Token configuration. Without it nobody can sign up with Microsoft, on purpose: see `oidc.microsoft.jsonnet`. The sign-in screen shows its button either way, so set this up before people see it.
 6. **Mail:** an SMTP login from a provider like Postmark, Brevo or Amazon SES, with SPF and DKIM set up for the domain. Without those, invites land in spam.
@@ -64,6 +65,12 @@ Run these on the server as the `deploy` user, from `/opt/picagrid`.
 | Change a setting | Edit `.env`, then `docker compose up -d --wait` |
 
 Allow someone to sign up without an invite by adding them to `SIGNUP_ALLOWED_EMAILS` in `.env`.
+
+## Uploaded files
+
+Files are in one bucket in Garage, on one node keeping one copy, which is meant for testing within the team. `scripts/deploy.sh` generates its settings in `.env`. Browsers upload straight to it, so restarting the API doesn't interrupt an upload, and everything is read through the API.
+
+To use another S3 service, create a bucket and set `S3_ENDPOINT`, `S3_PUBLIC_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY` and `S3_SECRET_KEY` in `.env`. The API sets the bucket's CORS and expiry rules when it starts, and logs it if it can't.
 
 ## Backups
 

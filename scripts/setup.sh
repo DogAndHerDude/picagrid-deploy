@@ -210,7 +210,7 @@ check_dns() {
   local domain ip host found missing=0
   domain="$(grep -E '^DOMAIN=' "$APP_DIR/.env" | cut -d= -f2-)"
   ip="$(curl -fsS -4 -m 10 https://ifconfig.me || true)"
-  for host in "$domain" "www.$domain" "app.$domain" "api.$domain"; do
+  for host in "$domain" "www.$domain" "app.$domain" "api.$domain" "s3.$domain"; do
     found="$(dig +short A "$host" | tail -n 1)"
     if [ "$found" = "$ip" ]; then echo "  ok      $host"; else echo "  WRONG   $host is '${found:-nothing}', should be $ip"; missing=1; fi
   done

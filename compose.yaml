@@ -23,6 +23,8 @@ services:
       - --entrypoints.web.http.redirections.entrypoint.to=websecure
       - --entrypoints.web.http.redirections.entrypoint.scheme=https
       - --entrypoints.websecure.address=:443
+      # Long enough for the largest upload on a slow connection. The default cuts one off at a minute.
+      - --entrypoints.websecure.transport.respondingtimeouts.readtimeout=30m
       - --entrypoints.websecure.http.tls.certresolver=letsencrypt
       - --providers.docker.exposedbydefault=false
       - --providers.docker.network=${COMPOSE_PROJECT_NAME:-picagrid}_default
@@ -62,6 +64,51 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
+
+  # Uploaded files. Browsers send them here directly, at addresses the API signs, so an update to the
+  # API never interrupts one. Pinned, so it only restarts when this line changes.
+  garage:
+    image: dxflrs/garage:v2.5.0
+    <<: [*restart, *logging]
+    command: ["/garage", "server", "--single-node", "--default-bucket"]
+    environment:
+      RUST_LOG: garage=warn
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:?}
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN:?}
+      GARAGE_DEFAULT_ACCESS_KEY: ${S3_ACCESS_KEY:?}
+      GARAGE_DEFAULT_SECRET_KEY: ${S3_SECRET_KEY:?}
+      GARAGE_DEFAULT_BUCKET: ${S3_BUCKET:-picagrid}
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      - garage:/var/lib/garage
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.garage.loadbalancer.server.port=3900
+      # Only for sending files in. Everything read goes through the API, which checks who's asking.
+      - traefik.http.routers.garage.rule=Host(`s3.${DOMAIN:?}`) && (Method(`PUT`) || Method(`OPTIONS`))
+      - traefik.http.routers.garage.entrypoints=websecure
+      - traefik.http.routers.garage.service=garage
+      - traefik.http.routers.garage.middlewares=secure-headers
+    healthcheck:
+      test: ["CMD", "/garage", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # Copies files in and out of storage for scripts/backup.sh and restore.sh. Only runs when they ask.
+  rclone:
+    image: rclone/rclone:1.76.0
+    profiles: [tools]
+    <<: *logging
+    environment:
+      RCLONE_CONFIG: /dev/null
+      RCLONE_CONFIG_STORE_TYPE: s3
+      RCLONE_CONFIG_STORE_PROVIDER: Other
+      RCLONE_CONFIG_STORE_ENDPOINT: ${S3_ENDPOINT:-http://garage:3900}
+      RCLONE_CONFIG_STORE_REGION: ${S3_REGION:-garage}
+      RCLONE_CONFIG_STORE_ACCESS_KEY_ID: ${S3_ACCESS_KEY:?}
+      RCLONE_CONFIG_STORE_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:?}
+      RCLONE_CONFIG_STORE_FORCE_PATH_STYLE: "true"
 
   kratos-migrate:
     image: ${IMAGE_PREFIX:-ghcr.io/dogandherdude}/picagrid-kratos:${KRATOS_TAG:-main}
@@ -164,9 +211,12 @@ services:
       SIGNUP_ALLOWED_EMAILS: ${SIGNUP_ALLOWED_EMAILS:-}
       SSO_DEFAULT_PROVIDER: ${SSO_DEFAULT_PROVIDER:-}
       SSO_DOMAINS: ${SSO_DOMAINS:-}
-      ASSET_DIR: /data/assets
-    volumes:
-      - assets:/data/assets
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://garage:3900}
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-https://s3.${DOMAIN:?}}
+      S3_REGION: ${S3_REGION:-garage}
+      S3_BUCKET: ${S3_BUCKET:-picagrid}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?}
     labels:
       - traefik.enable=true
       - traefik.http.services.api.loadbalancer.server.port=8080
@@ -186,6 +236,8 @@ services:
       api-migrate:
         condition: service_completed_successfully
       kratos:
+        condition: service_healthy
+      garage:
         condition: service_healthy
 
   ui:
@@ -230,5 +282,5 @@ services:
 
 volumes:
   postgres:
-  assets:
+  garage:
   letsencrypt:

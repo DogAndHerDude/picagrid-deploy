@@ -40,5 +40,7 @@ KRATOS_SMTP_URI=smtp://mailpit:1025/?disable_starttls=true
 OIDC_PROVIDERS='[{"id":"google","provider":"generic","label":"Google","client_id":"x","client_secret":"x","issuer_url":"http://mock.picagrid.localhost:8090/google","mapper_url":"base64://$mapper","scope":["openid","email","profile"]}]'
 ENV
 fi
+source scripts/common.sh
+ensure_storage_settings
 docker compose up -d --wait --wait-timeout 240
 docker compose ps --format 'table {{.Service}}\t{{.Status}}'

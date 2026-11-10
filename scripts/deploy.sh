@@ -21,6 +21,7 @@ if git remote get-url origin >/dev/null 2>&1; then
   git pull --quiet --ff-only || log "couldn't update the deploy repository, carrying on with what's here"
 fi
 config_after="$(git rev-parse HEAD 2>/dev/null || true)"
+ensure_storage_settings
 
 images() { docker compose config --images | sort -u; }
 image_id() { docker image inspect --format '{{.Id}}' "$1" 2>/dev/null || true; }

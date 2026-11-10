@@ -25,7 +25,11 @@ gzip -dc "$backup/databases.sql.gz" | docker compose exec -T postgres psql --use
 
 if [ -f "$backup/assets.tar.gz" ]; then
   log "restoring the uploaded files"
-  docker compose run --rm --no-deps -T --entrypoint sh api -c 'rm -rf /data/assets/* && tar -C /data -xzf -' <"$backup/assets.tar.gz"
+  unpacked="$(mktemp -d "$BACKUP_DIR/restore.XXXXXX")"
+  trap 'rm -rf "$unpacked"' EXIT
+  tar -C "$unpacked" -xzf "$backup/assets.tar.gz"
+  docker compose up -d --wait --wait-timeout "${WAIT_SECONDS:-240}" garage
+  rclone_run sync "/backups/$(basename "$unpacked")/assets" "store:$(storage_bucket)"
 fi
 
 log "starting the app"
